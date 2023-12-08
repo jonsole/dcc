@@ -204,30 +204,6 @@
       <SubType>compile</SubType>
       <Link>esp_tx.c</Link>
     </Compile>
-    <Compile Include="..\common\kved\kved.c">
-      <SubType>compile</SubType>
-      <Link>kved.c</Link>
-    </Compile>
-    <Compile Include="..\common\kved\kved.h">
-      <SubType>compile</SubType>
-      <Link>kved.h</Link>
-    </Compile>
-    <Compile Include="..\common\kved\kved_config.h">
-      <SubType>compile</SubType>
-      <Link>kved_config.h</Link>
-    </Compile>
-    <Compile Include="..\common\kved\kved_cpu.c">
-      <SubType>compile</SubType>
-      <Link>kved_cpu.c</Link>
-    </Compile>
-    <Compile Include="..\common\kved\kved_cpu.h">
-      <SubType>compile</SubType>
-      <Link>kved_cpu.h</Link>
-    </Compile>
-    <Compile Include="..\common\kved\kved_flash.h">
-      <SubType>compile</SubType>
-      <Link>kved_flash.h</Link>
-    </Compile>
     <Compile Include="..\common\mem.c">
       <SubType>compile</SubType>
       <Link>mem.c</Link>
@@ -298,18 +274,6 @@
     </Compile>
     <Compile Include="evsys.h">
       <SubType>compile</SubType>
-    </Compile>
-    <Compile Include="kved\port_cpu.c">
-      <SubType>compile</SubType>
-      <Link>port_cpu.c</Link>
-    </Compile>
-    <Compile Include="kved\port_flash.c">
-      <SubType>compile</SubType>
-      <Link>port_flash.c</Link>
-    </Compile>
-    <Compile Include="kved\port_flash.h">
-      <SubType>compile</SubType>
-      <Link>port_flash.h</Link>
     </Compile>
     <Compile Include="ltp305.c">
       <SubType>compile</SubType>

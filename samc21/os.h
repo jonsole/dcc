@@ -74,7 +74,7 @@ __inline static void OS_ListInit(OS_List_t *List)
 
 __inline static bool OS_ListIsEmpty(OS_List_t *List)
 {
-	return (List->TailPred == (OS_ListNode_t *)List);
+	return (List->TailPred ==  (OS_ListNode_t *)&List->Head);
 }
 
 __inline static OS_ListNode_t *OS_ListHead(OS_List_t *List)

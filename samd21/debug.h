@@ -59,6 +59,7 @@ extern void Debug_PrintF(const char *Format, ...);
 #ifndef Debug
 #define Debug(...)			Debug_PrintF(__VA_ARGS__)
 #endif
+#define Debug_Verbose(...)	((DebugState.Level >= 3) ? Debug_PrintF(__VA_ARGS__) : 0)
 #define Debug_Test(...)		((DebugState.Level >= 2) ? Debug_PrintF(__VA_ARGS__) : 0)
 #define Debug_Info(...)		((DebugState.Level >= 1) ? Debug_PrintF(__VA_ARGS__) : 0)
 #define Debug_Error(...)	((DebugState.Level >= 0) ? Debug_PrintF(__VA_ARGS__) : 0)

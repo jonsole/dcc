@@ -15,7 +15,7 @@ extern void *MEM_Alloc(uint16_t);
 
 extern void MEM_Free(const void *);
 
-#define MEM_Create(x)  MEM_Alloc(sizeof(x))
+#define MEM_Create(x)  (x *)MEM_Alloc(sizeof(x))
 
 #ifdef __cplusplus
 }

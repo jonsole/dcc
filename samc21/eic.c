@@ -29,6 +29,7 @@ void EIC_Init(void)
 	GCLK->PCHCTRL[EIC_GCLK_ID].reg |= GCLK_PCHCTRL_CHEN;
 	while (!(GCLK->PCHCTRL[EIC_GCLK_ID].reg & GCLK_PCHCTRL_CHEN));
 	
+	NVIC_SetPriority(EIC_IRQn, 3);
 	NVIC_EnableIRQ(EIC_IRQn);
 
 	EIC->CTRLA.bit.ENABLE = 1;

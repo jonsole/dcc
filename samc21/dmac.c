@@ -66,7 +66,7 @@ void DMAC_Init(void)
 	DMAC->CTRL.reg = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
 
 	/* Enable DMAC interrupts, priority 2 */
-	NVIC_SetPriority(DMAC_IRQn, 2);
+	NVIC_SetPriority(DMAC_IRQn, 1);
 	NVIC_EnableIRQ(DMAC_IRQn);
 }
 

@@ -31,6 +31,7 @@ void ESP_SyncTask(ESP_t *Esp)
 			{
 				case ESP_SYNC_STATE_SHY:
 					ESP_Debug(Esp, "Sending SYNC\n");
+					ESP_TxReset(Esp);
 					ESP_SyncTxPacket(Esp, ESP_SYNC_PACKET_SYNC);
 					Esp->SyncTimer = ESP_SYNC_PERIOD;
 					break;

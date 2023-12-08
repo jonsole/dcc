@@ -42,6 +42,7 @@ static void Debug_TxKick(void)
 				DMAC->CHID.reg = ChannelId;
 				
 				/* Set in progress flag */
+				PIO_Set(PIN_PA20);
 				DebugState.TxInProgress = 1;
 			}
 		}
@@ -59,7 +60,13 @@ static void Debug_RxInterruptHandler(uint8_t IntPending, void *DebugVoid)
 
 static void Debug_TxInterruptHandler(void *DebugVoid, uint8_t DmaChannel, uint16_t IntPending)
 {
+	uint8_t ChannelId = DMAC->CHID.reg;
+	DMAC->CHID.reg = DebugState.TxUsartDmaChannel;	
 	const uint8_t IntStatus = DMAC->CHINTFLAG.reg;
+	DMAC->CHINTFLAG.reg = IntStatus;
+	DMAC->CHID.reg = ChannelId;
+
+	PIO_Clear(PIN_PA20);
 	if (IntStatus & DMAC_CHINTFLAG_TCMPL)
 	{
 		/* Synchronise buffer outdex with PDC transmit address */
@@ -71,14 +78,17 @@ static void Debug_TxInterruptHandler(void *DebugVoid, uint8_t DmaChannel, uint16
 		/* Re-start DMA if there's any more data in buffer */
 		Debug_TxKick();
 	}
-
-	/* Clear all channel interrupts */
-	DMAC->CHINTFLAG.reg = IntStatus;
+	
+	if (IntStatus & DMAC_CHINTFLAG_TERR)
+		Panic();
+			
+	
 }
 
 void Debug_FormatPutChar(char Char, void *Context)
 {
-	while (BufferSpace(DebugState.TxBuffer) < 2);
+	if (BufferSpace(DebugState.TxBuffer) < 2)
+		return;
 		
 	BufferWrite(DebugState.TxBuffer, Char);
 	if (Char == '\n')
@@ -111,6 +121,18 @@ void Debug_Init(OS_TaskId_t TaskId, OS_SignalSet_t DebugSignal)
 	DebugState.ClientTask = TaskId;
 	DebugState.ClientSignal = DebugSignal;
 
+	/* Initialise USART */
+	SERCOM_UsartInit(DebugState.Instance, 115200, 3, 1);
+	SERCOM_UsartTxEnable(DebugState.Instance);
+	SERCOM_UsartRxEnable(DebugState.Instance);
+
+	/* Configure PIOs for this USART */
+	PanicFalse(DebugState.Instance == 4);
+	PIO_SetPeripheral(PIN_PB10, PIO_PERIPHERAL_D);
+	PIO_EnablePeripheral(PIN_PB10);
+	PIO_SetPeripheral(PIN_PB11, PIO_PERIPHERAL_D);
+	PIO_EnablePeripheral(PIN_PB11);
+
 	/* Allocate DMA channels for USART transmit */
 	DebugState.TxUsartDmaChannel = DMAC_ChannelAllocate(Debug_TxInterruptHandler, NULL, DMAC_NO_CHANNEL);
 	DebugState.TxUsartDmaTrigger = SERCOM_DmaTxTrigger(DebugState.Instance);
@@ -128,18 +150,6 @@ void Debug_Init(OS_TaskId_t TaskId, OS_SignalSet_t DebugSignal)
 	/* Configure and enable DMA interrupt */
 	DMAC->CHCTRLB.reg = DMAC_CHCTRLB_TRIGACT_BEAT | DMAC_CHCTRLB_TRIGSRC(DebugState.TxUsartDmaTrigger);
 	DMAC->CHINTENSET.reg = DMAC_CHINTENSET_MASK;
-
-	/* Configure PIOs for this USART */
-	PanicFalse(DebugState.Instance == 4);
-	PIO_SetPeripheral(PIN_PB10, PIO_PERIPHERAL_D);
-	PIO_EnablePeripheral(PIN_PB10);
-	PIO_SetPeripheral(PIN_PB11, PIO_PERIPHERAL_D);
-	PIO_EnablePeripheral(PIN_PB11);
-
-	/* Initialise USART */
-	SERCOM_UsartInit(DebugState.Instance, 115200, 3, 1);
-	SERCOM_UsartTxEnable(DebugState.Instance);
-	SERCOM_UsartRxEnable(DebugState.Instance);
 	
 	BufferInit(DebugState.TxBuffer);
 	BufferInit(DebugState.RxBuffer);
@@ -171,6 +181,9 @@ void Debug_Panic(const char *Msg, const char *File, int Line)
 	PIO_EnableOutput(PIN_PA09);
 	PIO_Clear(PIN_PA09);
 
+	while (BufferAmount(DebugState.TxBuffer))
+		Debug_TxInterruptHandler(0, DebugState.TxUsartDmaChannel, 0);		
+	
 	/* Reset DMA */
 	DMAC->CHID.reg = DebugState.TxUsartDmaChannel;
 	DMAC->CHCTRLA.reg &= ~DMAC_CHCTRLA_ENABLE;

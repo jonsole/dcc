@@ -52,6 +52,12 @@ static __inline void SERCOM_UsartSyncResetWait(SercomUsart *Usart)
 	while (Usart->SYNCBUSY.bit.SWRST);
 }
 
+static __inline void SERCOM_UsartCtrlBWait(SercomUsart *Usart)
+{
+	while (Usart->SYNCBUSY.bit.CTRLB);
+}
+
+
 static __inline void SERCOM_UsartEnable(uint8_t Instance)
 {
 	SercomUsart *Usart = &SERCOM_GetSercom(Instance)->USART;
@@ -70,24 +76,28 @@ static __inline void SERCOM_UsartTxEnable(uint8_t Instance)
 {
 	SercomUsart *Usart = &SERCOM_GetSercom(Instance)->USART;
 	Usart->CTRLB.bit.TXEN = 1;
+	while (Usart->SYNCBUSY.bit.CTRLB);
 }
 
 static __inline void SERCOM_UsartTxDisable(uint8_t Instance)
 {
 	SercomUsart *Usart = &SERCOM_GetSercom(Instance)->USART;
 	Usart->CTRLB.bit.TXEN = 0;
+	while (Usart->SYNCBUSY.bit.CTRLB);
 }
 
 static __inline void SERCOM_UsartRxEnable(uint8_t Instance)
 {
 	SercomUsart *Usart = &SERCOM_GetSercom(Instance)->USART;
 	Usart->CTRLB.bit.RXEN = 1;
+	while (Usart->SYNCBUSY.bit.CTRLB);
 }
 
 static __inline void SERCOM_UsartRxDisable(uint8_t Instance)
 {
 	SercomUsart *Usart = &SERCOM_GetSercom(Instance)->USART;
 	Usart->CTRLB.bit.RXEN = 0;
+	while (Usart->SYNCBUSY.bit.CTRLB);
 }
 
 static __inline bool SERCOM_UsartTxReady(uint8_t Instance)

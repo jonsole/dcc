@@ -10,21 +10,21 @@
 extern "C" {
 #endif
 
-#define DEBUG_TX_BUFFER_SIZE (2048)
-#define DEBUG_RX_BUFFER_SIZE (32)
+#define DEBUG_TX_BUFFER_SIZE (4096)
+#define DEBUG_RX_BUFFER_SIZE (1024)
 
 typedef struct
 {
 	volatile uint16_t Index;
 	volatile uint16_t Outdex;
-	uint8_t Buffer[DEBUG_TX_BUFFER_SIZE];
+	volatile uint8_t Buffer[DEBUG_TX_BUFFER_SIZE];
 } DebugTxBuffer_t;
 
 typedef struct
 {
 	volatile uint16_t Index;
 	volatile uint16_t Outdex;
-	uint8_t Buffer[DEBUG_RX_BUFFER_SIZE];
+	volatile uint8_t Buffer[DEBUG_RX_BUFFER_SIZE];
 } DebugRxBuffer_t;
 
 typedef struct
@@ -58,6 +58,7 @@ extern void Debug_PrintF(const char *Format, ...);
 
 #ifndef Debug
 #define Debug(...)			Debug_PrintF(__VA_ARGS__)
+#define DebugNoInt(...)		do { OS_InterruptDisable();Debug_PrintF(__VA_ARGS__);OS_InterruptEnable();} while(0)
 #endif
 #define Debug_Test(...)		((DebugState.Level >= 3) ? Debug_PrintF(__VA_ARGS__) : 0)
 #define Debug_Verbose(...)	((DebugState.Level >= 2) ? Debug_PrintF(__VA_ARGS__) : 0)

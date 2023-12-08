@@ -22,6 +22,48 @@ CLI_Buffer_t CLI_Buffer;
 
 typedef struct 
 {
+	uint8_t Loco;
+	uint32_t Functions;
+} CLI_LocoFunctions_t;
+
+CLI_LocoFunctions_t CLI_LocoFunctions[32];
+
+uint32_t CLI_GetLocoFunctions(uint8_t Loco)
+{
+	for (int Index = 0; Index < 32; Index++)
+	{
+		if (CLI_LocoFunctions[Index].Loco == Loco)
+			return CLI_LocoFunctions[Index].Functions;
+	}
+	return 0;
+}
+
+void CLI_SetLocoFunctions(uint8_t Loco, uint32_t Functions)
+{
+	for (int Index = 0; Index < 32; Index++)
+	{		
+		if (CLI_LocoFunctions[Index].Loco == Loco)
+		{
+			CLI_LocoFunctions[Index].Functions = Functions;
+			return;
+		}
+	}
+	
+	for (int Index = 0; Index < 32; Index++)
+	{		
+		if (CLI_LocoFunctions[Index].Loco == 0)
+		{
+			CLI_LocoFunctions[Index].Loco = Loco;			
+			CLI_LocoFunctions[Index].Functions = Functions;
+			return;
+		}
+	}
+	
+}
+
+
+typedef struct 
+{
 	int (*command)(int arvc, const char *argv[]);
 	const char *name;
 	const char *args;
@@ -39,18 +81,31 @@ static bool CLI_ArgToInt(const char *Arg, int *Value)
 
 int CLI_CommandCv(int argc, const char *argv[])
 {
-	if (argc != 2)
-		return -1;
-		
-	int CvId, CvValue;
-	if (CLI_ArgToInt(argv[1], &CvId) && CLI_ArgToInt(argv[2], &CvValue))
+	if (argc == 2)
 	{
-		Debug("Setting CV %u to %u\n", CvId, CvValue);
-		DCC_DirectWriteByte(CvId, CvValue);
-		return 0;
+		int CvId, CvValue;
+		if (CLI_ArgToInt(argv[1], &CvId) && CLI_ArgToInt(argv[2], &CvValue))
+		{
+			bool Acked = DCC_CvWrite(CvId, CvValue);
+			if (Acked)
+				Debug("CV %u = %u\n", CvId, CvValue);
+			else
+				Debug("Failed to set CV %u = %u\n", CvId, CvValue);			
+			return 0;
+		}	
+	}
+	else if (argc == 1)
+	{
+		int CvId, CvValue;
+		if (CLI_ArgToInt(argv[1], &CvId))
+		{			
+			CvValue = DCC_CvRead(CvId);		
+			Debug("CV %u = %u\n", CvId, CvValue);
+			return 0;
+		}
 	}	
-	else
-		return -1;
+
+	return -1;
 }
 
 
@@ -65,60 +120,59 @@ int CLI_CommandSpeed(int argc, const char *argv[])
 		if (Speed < 0)
 			DCC_SetLocomotiveSpeed(Loco, -Speed, 0);
 		else
+		{
 			DCC_SetLocomotiveSpeed(Loco, Speed, 1);
+			//DCC_SetLocomotiveSpeed(Loco, Speed, 1);
+			//DCC_SetLocomotiveSpeed(Loco, Speed, 1);
+		}
 		return 0;
 	}	
 	else
 		return -1;
 }
 
-int CLI_CommandLights(int argc, const char *argv[])
+int CLI_CommandFunction(int argc, const char *argv[])
 {
 	if (argc != 2)
 		return -1;
 		
-	int Loco, Lights;
-	if (CLI_ArgToInt(argv[1], &Loco) && CLI_ArgToInt(argv[2], &Lights))
+	int Loco, Function;
+	if (CLI_ArgToInt(argv[1], &Loco) && CLI_ArgToInt(argv[2], &Function))
 	{
-		DCC_SetLocomotiveFunctions(Loco, Lights & 0b11111, 0);
-		DCC_SetLocomotiveFunctions(Loco, (Lights >> 5) & 0b01111, 1);
-		//DCC_SetLocomotiveFunctions(Loco, (Lights >> 9) & 0b01111, 2);
-		return 0;
+		uint32_t FunctionMap = CLI_GetLocoFunctions(Loco);
+		FunctionMap ^= (1UL << Function);
+		CLI_SetLocoFunctions(Loco, FunctionMap);
+		Debug("Local %u functions %08x\n", Loco, FunctionMap);
+
+		if (Function <= 4)
+			DCC_SetLocomotiveFunctions(Loco, ((FunctionMap >> 1) & 0b01111) | ((FunctionMap & 0b00001) << 4), 0); /* F1 - F4 */
+		else if (Function <= 8)
+			DCC_SetLocomotiveFunctions(Loco, ((FunctionMap >> 5) & 0b01111), 5); /* F5 - F8 */
+		else if (Function <= 12)
+			DCC_SetLocomotiveFunctions(Loco, ((FunctionMap >> 9) & 0b01111), 9); /* F9 - F12 */
+		else if (Function <= 20)
+			DCC_SetLocomotiveFunctions(Loco, ((FunctionMap >> 13) & 0b1111111), 13); /* F13 - F20 */
+		else if (Function <= 28)
+			DCC_SetLocomotiveFunctions(Loco, ((FunctionMap >> 21) & 0b1111111), 21); /* F21 - F28 */
+		else if (Function <= 36)
+			DCC_SetLocomotiveFunctions(Loco, ((FunctionMap >> 29) & 0b1111111), 29); /* F29 - F36 */
+
+		return 0;		
 	}	
 	else
 		return -1;
 }
 
-int CLI_CommandControlLoco(int argc, const char *argv[])
-{
-	if (argc != 2)
-		return -1;
-		
-	int Control, Addr;
-	if (CLI_ArgToInt(argv[1], &Control) && CLI_ArgToInt(argv[2], &Addr))
-	{
-		//TRCON_SetAddress(Control, Addr);
-		return 0;
-	}	
-	else
-		return -1;
-}
 
 
 const CLI_Command_t CLI_CommandTable[] = 
 {
 	{ CLI_CommandCv, "CV", "ID/N VALUE/N", "Write CV value"	},
 	{ CLI_CommandSpeed, "SP", "LOCO/N SPEED/N", "Set locomotive speed" },
-	{ CLI_CommandLights,  "LI", "LOCO/N ON/B", "Turn Front/Rear lights on or off (FL4)" },
-	{ CLI_CommandControlLoco,  "SCL", "CONTROL/N LOCO/R", "Set control locomotive address" },
-//	{ CLI_CommandLights,  "FU", "LOCO/N FUNCTION/N", "Set function outputs" },
+	{ CLI_CommandFunction,  "FN", "LOCO/N FUNCTION/B", "Toggle function on or off" },
 	{ 0, 0, 0, 0 }
 };
 
-void CLI_Init(void)
-{	
-	BufferInit(CLI_Buffer);
-}
 
 
 static void CLI_ParseLine(void)
@@ -130,6 +184,8 @@ static void CLI_ParseLine(void)
 	char *token = strtok_r(str, " ", &str);
 	while (token)
 	{
+		if (token[0] == '#')
+			break;
 		argv[++argc] = token;
 		token = strtok_r(str, " ", &str);
 	}
@@ -194,4 +250,26 @@ void CLI_InputChar(uint8_t Char)
 		}
 		break;	
 	}
+}
+
+void CLI_Task(void *Instance)
+{
+	for (;;)
+	{
+		OS_SignalSet_t Sig = OS_SignalWait(0xFFFFUL);
+		uint8_t Char = Debug_GetChar();
+		while (Char)
+		{
+			CLI_InputChar(Char);
+			Char = Debug_GetChar();
+		}
+	}
+}
+
+void CLI_Init(void)
+{
+	static uint32_t CLI_TaskStack[256];
+	OS_TaskInit(CLI_TASK_ID, CLI_Task, NULL, CLI_TaskStack, sizeof(CLI_TaskStack));
+
+	BufferInit(CLI_Buffer);
 }

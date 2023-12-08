@@ -109,6 +109,12 @@ static __inline void PIO_Set(uint8_t Pio)
 	PORT->Group[Group].OUTSET.reg = 1UL << (Pio % 32);
 }
 
+static __inline void PIO_Toggle(uint8_t Pio)
+{
+	const uint8_t Group = PIO_GetPioGroup(Pio);
+	PORT->Group[Group].OUTTGL.reg = 1UL << (Pio % 32);
+}
+
 static __inline void PIO_Clear(uint8_t Pio)
 {
 	const uint8_t Group = PIO_GetPioGroup(Pio);

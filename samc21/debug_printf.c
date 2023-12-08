@@ -139,6 +139,12 @@ void xvprintf(const char *Format, va_list ArgList, void (*PutCharFunc)(char, voi
 				Radix = 16;
 				break;
 
+			case 'P':
+				Radix = 16;
+				PutCharFunc('0', PutCharData);
+				PutCharFunc('x', PutCharData);
+				break;
+			
 			/* Unknown type (pass through) */
 			default:
 				PutCharFunc(Char, PutCharData);

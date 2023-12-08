@@ -1,6 +1,7 @@
 #include <sam.h>
 
 #include "mem.h"
+#include "os.h"
 #include "debug.h"
 
 extern uint8_t *_end;
@@ -16,6 +17,7 @@ typedef struct
 {
 	uint16_t Size;
 	void *Start;
+	uint16_t NumFreeBlocks;
 	MEM_FreeBlock_t *Free;
 } MEM_Pool_t;
 
@@ -38,6 +40,18 @@ static const MEM_PoolConfig_t MEM_PoolConfig[NUM_POOLS] =
 	{256, 5},
 };
 
+extern void Dummy_Handler(void);
+void MEM_BlockClear(void *Ptr, uint32_t Size)
+{
+	uint32_t *Mem = (uint32_t *)Ptr;
+	while (Size >= 4)
+	{
+		*Mem = 0x55555555;
+		Mem ++;
+		Size -= 4;		
+	}
+}
+
 void MEM_Init(void)
 {
 	uint8_t *MemPtr = (uint8_t *)&_end;
@@ -53,21 +67,24 @@ void MEM_Init(void)
 		MEM_Pool[Pool].Free = NULL;
 		MEM_Pool[Pool].Start = MemPtr;
 		MEM_Pool[Pool].Size = MEM_PoolConfig[Pool].Size;
-
+		MEM_Pool[Pool].NumFreeBlocks = 0;
+		
 		/* Add blocks to pool */
 		for (int Block = 0; Block < MEM_PoolConfig[Pool].NumBlocks; Block++)
 		{
 			/* Check enough space left for this block */
 			if (MemPtr + MEM_Pool[Pool].Size >= MemEnd)
 			{
-				Debug("MEM_Init, out of memory to create pool size %u\n", MEM_Pool[Pool].Size);
 				break;
 			}
 
 			/* Create block and add it to pool's free list */
+			MEM_BlockClear(MemPtr, MEM_Pool[Pool].Size);
+
 			MEM_FreeBlock_t *Block = (MEM_FreeBlock_t *)MemPtr;
 			Block->Next = MEM_Pool[Pool].Free;
 			MEM_Pool[Pool].Free = Block;
+			MEM_Pool[Pool].NumFreeBlocks += 1;
 
 			/* Advance memory pointer */
 			MemPtr += MEM_Pool[Pool].Size;
@@ -87,14 +104,14 @@ void *MEM_Alloc(uint16_t Size)
 			if (Mem)
 			{
 				MEM_Pool[Index].Free = Mem->Next;
+				MEM_Pool[Index].NumFreeBlocks -= 1;
 				OS_InterruptEnable();
 				return Mem;
 			}
 			OS_InterruptEnable();
 		}
 	}
-
-	PanicMessage("Out Of Memory");
+	Panic();
 	return NULL;
 }
 
@@ -118,24 +135,25 @@ void MEM_Free(const void *Mem)
 	
 	MEM_FreeBlock_t *MemBlock = (MEM_FreeBlock_t *)Mem;
 
-	//AtomicBlock
+#if 0
+	/* Check block isn't already in free list */
+	MEM_FreeBlock_t *Block = MEM_Pool[Index].Free;
+	while (Block != NULL)
 	{
-#if 0	/* Check block isn't already in free list */
-		MEM_FreeBlock_t *Block = MEM_Pool[Index].Free;
-		while (Block != NULL)
-		{
-			if (Block == MemBlock)
-				return;
-			Block = Block->Next;
-		}
-#endif
-
-		OS_InterruptDisable();
-		
-		/* Link block to start of free list */
-		MemBlock->Next = MEM_Pool[Index].Free;
-		MEM_Pool[Index].Free = MemBlock;
-		
-		OS_InterruptEnable();
+		if (Block == MemBlock)
+			return;
+		Block = Block->Next;
 	}
+#endif
+	MEM_BlockClear(Mem, MEM_Pool[Index].Size);
+
+	OS_InterruptDisable();
+		
+	/* Link block to start of free list */
+	MemBlock->Next = MEM_Pool[Index].Free;
+	MEM_Pool[Index].Free = MemBlock;
+	MEM_Pool[Index].NumFreeBlocks += 1;
+
+		
+	OS_InterruptEnable();
 }

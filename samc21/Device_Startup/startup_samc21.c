@@ -280,8 +280,10 @@ void Reset_Handler(void)
  */
 #include "pio.h"
 
+volatile int Wait = 1;
 void Dummy_Handler(void)
 {
+	while (1);
 	/* Turn of power to track if we crash to stop runaway trains */
 	PIO_DisablePeripheral(PIN_PA08);
 	PIO_DisablePeripheral(PIN_PA09);
@@ -290,5 +292,5 @@ void Dummy_Handler(void)
 	PIO_EnableOutput(PIN_PA09);
 	PIO_Clear(PIN_PA09);
 
-	while (1);
+	while (Wait);
 }

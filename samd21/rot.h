@@ -15,7 +15,7 @@
 
 void ROT_IntHandler(void *UserVoid, uint32_t Status);
 void ROT_IntClickHandler(void *UserVoid, uint32_t Status);
-void ROT_InitEncoder(uint8_t Instance, uint8_t PioA, uint8_t ExtIntA, uint8_t PioB, uint8_t ExtIntB, uint8_t PioC, uint8_t ExtIntC, OS_TaskId_t Task, OS_SignalSet_t ChangeSignal, OS_SignalSet_t ResetSignal);
+void ROT_InitEncoder(uint8_t Instance, uint8_t PioA, uint8_t ExtIntA, uint8_t PioB, uint8_t ExtIntB, OS_TaskId_t Task, OS_SignalSet_t ChangeSignal);
 void ROT_Init(void);
 int8_t ROT_Read(uint8_t Instance, bool Reset);
 

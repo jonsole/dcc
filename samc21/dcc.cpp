@@ -14,731 +14,253 @@
 #include "clk.h"
 #include "rtime.h"
 #include "debug.h"
+#include "ac.h"
+#include "dcc_packet.h"
 
-volatile uint32_t DCC_TimerTime;
+volatile Time_t DCC_TimerTime;
 
-#define DCC_MS(x)	((x) * 1000)
-
-#define DCC_SCHEDULED_END (-1)
-#define DCC_PACKET_END_DELAY (5000)
-
-typedef enum
-{
-	DCC_STATE_IDLE_1,
-	DCC_STATE_IDLE_2,
-
-	DCC_STATE_PREAMBLE_1,
-	DCC_STATE_PREAMBLE_2,
-	
-	DCC_STATE_PAYLOAD_START_1,
-	DCC_STATE_PAYLOAD_START_2,
-	DCC_STATE_PAYLOAD_START_3,
-	DCC_STATE_PAYLOAD_START_4,
-
-	DCC_STATE_PAYLOAD_BIT0_1,
-	DCC_STATE_PAYLOAD_BIT0_2,
-	DCC_STATE_PAYLOAD_BIT0_3,
-	DCC_STATE_PAYLOAD_BIT0_4,
-
-	DCC_STATE_PAYLOAD_BIT1_1,
-	DCC_STATE_PAYLOAD_BIT1_2,
-	
-	DCC_STATE_PAYLOAD_END_1,
-	DCC_STATE_PAYLOAD_END_2,	
-} DCC_State_t;
-
-
-volatile static DCC_State_t DCC_State;
-
-static uint8_t  DCC_PreambleCount;
-static uint8_t  DCC_EndCount;
 static uint8_t	DCC_Mode;
 
-static uint8_t DCC_PayloadIndex;
-static uint8_t DCC_PayloadByte;
-static uint8_t DCC_PayloadBitCount;
+
+DCC_Packet_t *DCC_PacketSendList;
+
+DCC_Packet_t *volatile DCC_TxPacket;
+DCC_Packet_t *volatile DCC_ScheduledPacket;
+Time_t DCC_ScheduledPacketTime;
+
+
+DCC_AddressInfo_t *DCC_AddressInfoList;
 
 static const uint8_t ResetPacket[] = { 0x00, 0x00, 0x00 };
 
-static const uint16_t StatePattern[] = 
+
+
+
+DCC_AddressInfo_t *DCC_AllocAddressInfo(uint8_t Address)
 {
-	TCC_PATT_PGV0, //	DCC_STATE_IDLE_1
-	TCC_PATT_PGV0, //	DCC_STATE_IDLE_2
-
-	TCC_PATT_PGV0, //	DCC_STATE_PREAMBLE_1
-	TCC_PATT_PGV1, //	DCC_STATE_PREAMBLE_2
-	
-	TCC_PATT_PGV0, //	DCC_STATE_PAYLOAD_START_1
-	TCC_PATT_PGV0, //	DCC_STATE_PAYLOAD_START_2
-	TCC_PATT_PGV1, //	DCC_STATE_PAYLOAD_START_3
-	TCC_PATT_PGV1, //	DCC_STATE_PAYLOAD_START_4
-
-	TCC_PATT_PGV0, //	DCC_STATE_PAYLOAD_BIT0_1
-	TCC_PATT_PGV0, //	DCC_STATE_PAYLOAD_BIT0_2
-	TCC_PATT_PGV1, //	DCC_STATE_PAYLOAD_BIT0_3
-	TCC_PATT_PGV1, //	DCC_STATE_PAYLOAD_BIT0_4
-
-	TCC_PATT_PGV0, //	DCC_STATE_PAYLOAD_BIT1_1
-	TCC_PATT_PGV1, //	DCC_STATE_PAYLOAD_BIT1_2
-
-	TCC_PATT_PGV0, //	DCC_STATE_PAYLOAD_END_1
-	TCC_PATT_PGV1, //	DCC_STATE_PAYLOAD_END_2
-};
-
-#define DCC_SIGNAL_PKT_COMPLETE (1 << (OS_SIGNAL_USER + 1))
-#define DCC_SIGNAL_PKT_READY	(1 << (OS_SIGNAL_USER + 2))
-
-
-class DCC_Packet
-{
-public:
-	DCC_Packet();
-	virtual ~DCC_Packet();
-	
-	virtual int32_t Schedule(uint32_t Time) { return 0; }
-	virtual bool IsSame(const DCC_Packet *Packet) { return false; }
-
-	static DCC_Packet *List;
-	static uint8_t PreviousAddress;
-	static uint32_t PreviousEndTime;
-	
-	uint32_t Completed;
-	DCC_Packet *Next;
-	int32_t Delta;
-	uint8_t Size;
-	uint8_t Data[6];
-	OS_TaskId_t TaskId;
-	OS_SignalSet_t Signal;
-	uint8_t PreambleBits;
-	enum {CREATED, SCHEDULED, ACTIVE, COMPLETE} State;
-	bool DisableReschedule;
-	
-	void Init(const uint8_t *Data, uint8_t Size, uint8_t PreambleBits, OS_SignalSet_t Signal);
-};
-
-
-DCC_Packet::DCC_Packet()
-{
-	Next = NULL;
-	State = CREATED;
-	DisableReschedule = false;
-}
-
-DCC_Packet::~DCC_Packet()
-{
-}
-
-void DCC_Packet::Init(const uint8_t *Data, uint8_t Size, uint8_t PreambleBits, OS_SignalSet_t Signal)
-{
-	memcpy(this->Data, Data, Size);
-	this->Size = Size;
-	this->PreambleBits = PreambleBits;
-	this->TaskId = OS_TaskId();
-	this->Signal = Signal;
-}
-
-
-class DCC_SpeedPacket : public DCC_Packet
-{
-public:
-	DCC_SpeedPacket(uint8_t Address, uint8_t Speed, uint8_t Forward);
-	virtual int32_t Schedule(uint32_t Time);
-	virtual bool IsSame(const DCC_Packet *Packet);
-protected:
-	uint8_t TxCount;
-	uint32_t Scheduled;
-	bool Repeat;
-};
-
-DCC_SpeedPacket::DCC_SpeedPacket(uint8_t Address, uint8_t Speed, uint8_t Forward)
-{
-	uint8_t Packet[4];
-
-	// The format of this instruction is 001CCCCC  0  DDDDDDDD
-	// The 5-bit sub-instruction CCCCC allows for 32 separate Advanced Operations Sub-Instructions.
-		
-	// CCCCC = 11111: 128 Speed Step Control - Instruction "11111" is used to send one of 126 Digital
-	// Decoder speed steps.  The subsequent single byte shall define speed and direction with bit 7
-	// being direction ("1" is forward and "0" is reverse) and the remaining bits used to indicate
-	// speed.  The most significant speed bit is bit 6. A data-byte value of U0000000 is used for stop,
-	// and a data-byte value of U0000001 is used for emergency stop. This allows up to 126 speed steps.
-	// When operations mode acknowledgment is enabled, receipt of a 128 Speed Step Control packet must
-	// be acknowledged with an operations mode acknowledgment.
-	Packet[0] = Address;
-	Packet[1] = 0b00111111;
-	if (Forward)
-		Packet[2] = 0x80;
-	else
-		Packet[2] = 0x00;
-	
-	/* Skip E-Stop value of 0x01 */
-	if (Speed >= 0)
-		Speed += 1;
-
-	Packet[2] |= Speed;
-	Packet[3] = Packet[0] ^ Packet[1] ^ Packet[2];
-		
-	Repeat = (Speed != 0);
-	TxCount = 0;
-	
-	Init(Packet, sizeof(Packet), 14, 0);
-}
-
-int32_t DCC_SpeedPacket::Schedule(uint32_t Time)
-{
-	TxCount += 1;
-	if (TxCount < 4)
+	/* Find existing Address structure */
+	DCC_AddressInfo_t *AddressInfo = DCC_AddressInfoList;
+	while (AddressInfo)
 	{
-		Scheduled = Time;
-		return 0;
+		if (AddressInfo->Address == Address)
+			return AddressInfo;
+		AddressInfo = AddressInfo->Next;
 	}
-	else
+	
+	/* No matching structure found, allocate one */
+	AddressInfo = MEM_Create(DCC_AddressInfo_t);
+	PanicNull(AddressInfo);
+	AddressInfo->Next = DCC_AddressInfoList;
+	AddressInfo->Address = Address;
+	AddressInfo->HoldOffTime = DCC_TimerTime;
+	AddressInfo->List = NULL;
+	DCC_AddressInfoList = AddressInfo;
+	//Debug("Alloc AI %p for %u", AddressInfo, Address);
+	return AddressInfo;
+}
+
+
+/* Get next packet to be transmitted */
+DCC_Packet_t *DCC_NextPacket(Time_t &TxTime)
+{
+	DCC_Packet_t *TxPacket = NULL;
+		
+	DCC_AddressInfo_t *AddressInfo = DCC_AddressInfoList;
+	//Debug("NP time %u\n", TxTime);
+	while (AddressInfo)
 	{
-		if (Repeat)
+		//Debug("  %u, time %u, hold off %u\n", AddressInfo->Address, AddressInfo->List ? AddressInfo->List->Time : 0, AddressInfo->List ? AddressInfo->HoldOffTime : 0);
+		
+		/* If we have already found a packet, see if this packet can be Tx'ed earlier */
+		if (TxPacket)
 		{
-			Scheduled = Time_Add(Scheduled, DCC_MS(500));
-			int32_t Delta = Time_Sub(Scheduled, Time);
-			return (Delta >= 0) ? Delta : 0;
+			if (Time_Lt(AddressInfo->HoldOffTime, TxTime))
+			{
+				if (AddressInfo->List && Time_Lt(AddressInfo->List->Time, TxTime))
+				{				
+					TxPacket = AddressInfo->List;
+					TxTime =  Time_Lt(AddressInfo->HoldOffTime, AddressInfo->List->Time) ? AddressInfo->List->Time : AddressInfo->HoldOffTime;
+				}
+			}
 		}
 		else
-			return DCC_SCHEDULED_END;
+		{
+			if (AddressInfo->List)
+			{
+				TxPacket = AddressInfo->List;
+				TxTime = Time_Lt(AddressInfo->HoldOffTime, AddressInfo->List->Time) ? AddressInfo->List->Time : AddressInfo->HoldOffTime;
+			}						
+		}
+		
+		AddressInfo = AddressInfo->Next;
 	}
+	
+	//Debug("  time %u, addr %u\n", TxTime, TxPacket ? TxPacket->Address : 0);
+
+	return TxPacket;
 }
 
-bool DCC_SpeedPacket::IsSame(const DCC_Packet *Packet)
-{	
-	return (Packet->Data[0] == Data[0]) &&
-		   (Packet->Data[1] == 0b00111111);
-}
 
-
-class DCC_FunctionPacket : public DCC_Packet
+static void DCC_InsertPacket(DCC_Packet_t *Packet)
 {
-public:
-	DCC_FunctionPacket(uint8_t Address, uint8_t Functions, uint8_t Group = 0);
-	virtual int32_t Schedule(uint32_t Time);
-	virtual bool IsSame(const DCC_Packet *Packet);
-protected:
-	uint8_t TxCount;
-	uint32_t Scheduled;
-	uint8_t Mask;
-};
-
-DCC_FunctionPacket::DCC_FunctionPacket(uint8_t Address, uint8_t Functions, uint8_t Group)
-{
-	uint8_t Packet[3];
-
-	// Function Group One Instruction (100)
-	// The format of this instruction is 100DDDDD
-	// Up to 5 auxiliary functions (functions FL and F1-F4) can be controlled by the Function Group One
-	// instruction.  Bits 0-3 shall define the value of functions F1-F4 with function F1 being controlled
-	// by bit 0 and function F4 being controlled by bit 3.  A value of "1" shall indicate that the function
-	// is "on" while a value of "0" shall indicate that the function is "off".  If Bit 1 of CV#29 has a
-	// value of one (1), then bit 4 controls function FL, otherwise bit 4 has no meaning. When operations
-	// mode acknowledgment is enabled, receipt of a function group 1 packet must be acknowledged according
-	// with an operations mode acknowledgment.
-	Packet[0] = Address;
-	switch (Group)
+	DCC_AddressInfo_t *AddressInfo = DCC_AllocAddressInfo(Packet->Address);
+	Packet->AddressInfo = AddressInfo;
+	
+	/* Remove any packets that are the same */
+	DCC_Packet_t **ListPacketRef, *ListPacket;
+	for (ListPacketRef = &AddressInfo->List; (ListPacket = *ListPacketRef) != NULL;)
 	{
-		case 0:
-			Packet[1] = 0b10000000 | (Functions & 0b11111);
-			Mask = 0b11100000;
-			break;
-			
-		case 1:
-			Packet[1] = 0b10110000 | (Functions & 0b01111);
-			Mask = 0b11110000;
-			break;
-			
-		case 2:
-			Packet[1] = 0b10100000 | (Functions & 0b01111);
-			Mask = 0b11110000;
-			break;		
+		if (Packet->IsSame(ListPacket))
+		{
+			//Debug("Cancel %p\n", ListPacket);
+			*ListPacketRef = ListPacket->Next;
+			delete ListPacket;
+		}
+		else
+			ListPacketRef = &ListPacket->Next;
 	}
-	Packet[2] = Packet[0] ^ Packet[1];
-
-	TxCount = 0;
-	Init(Packet, sizeof(Packet), 14, 0);
-}
-
-
-
-int32_t DCC_FunctionPacket::Schedule(uint32_t Time)
-{
-	TxCount += 1;
-	if (TxCount < 4)
-	{
-		Scheduled = Time;
-		return 0;
-	}
-	else
-	{
-		Scheduled = Time_Add(Scheduled, DCC_MS(1000));
-		int32_t Delta = Time_Sub(Scheduled, Time);
-		return (Delta >= 0) ? Delta : 0;
-	}
-}
-
-bool DCC_FunctionPacket::IsSame(const DCC_Packet *Packet)
-{
-	return (Packet->Data[0] == Data[0]) && ((Packet->Data[1] & Mask) == (Data[1] & Mask));
-}
-
-
-class DCC_IdlePacket : public DCC_Packet
-{
-public:
-	DCC_IdlePacket(void);
-	virtual int32_t Schedule(uint32_t Time);
-protected:
-	bool Scheduled;
-};
-
-DCC_IdlePacket::DCC_IdlePacket(void)
-{
-	static const uint8_t Packet[] = { 0xFF, 0x00, 0xFF };
-	Init(Packet, sizeof(Packet), 14, 0);
-	Scheduled = false;
-}
-
-int32_t DCC_IdlePacket::Schedule(uint32_t Time)
-{
-	if (!Scheduled)
-	{
-		Scheduled = true;
-		return 0;
-	}
-	else
-		return DCC_SCHEDULED_END;
-}
-
-
-
-class DCC_ServicePacket : public DCC_Packet
-{
-public:
-	DCC_ServicePacket(const uint8_t *Data, uint8_t DataSize, OS_SignalSet_t Signal);
-	virtual int32_t Schedule(uint32_t Time);
-protected:
-	uint8_t TxCount;
-};
-
-DCC_ServicePacket::DCC_ServicePacket(const uint8_t *Data, uint8_t DataSize, OS_SignalSet_t Signal)
-{
-	TxCount = 0;
-	Init(Data, DataSize, 50, Signal);
-}
-
-int32_t DCC_ServicePacket::Schedule(uint32_t Time)
-{
-	TxCount += 1;
-	if (TxCount <= 10)
-	{
-		return 0;
-	}
-	else
-		return DCC_SCHEDULED_END;
-}
-
-DCC_Packet *DCC_Packet::List;
-uint8_t DCC_Packet::PreviousAddress;
-uint32_t DCC_Packet::PreviousEndTime;
-
-
-static void DCC_InsertPacket(DCC_Packet *NewPacket, int32_t Delta)
-{	
-	PanicFalse(NewPacket->State == DCC_Packet::SCHEDULED);
-	PanicFalse(Delta >= 0);
 	
 	/* Insert packet into time ordered list */
-	DCC_Packet **PacketRef, *Packet;
-	for (PacketRef = &DCC_Packet::List; (Packet = *PacketRef) != NULL; PacketRef = &Packet->Next)
+	for (ListPacketRef = &AddressInfo->List; (ListPacket = *ListPacketRef) != NULL; ListPacketRef = &ListPacket->Next)
 	{
 		/* Exit loop if packet is after new packet */
-		if (Packet->Delta > Delta)
+		if (Time_Gt(ListPacket->Time, Packet->Time))
 			break;
-				
-		/* Adjust time for current packet */
-		Delta -= Packet->Delta;
-	}	
-		
-	/* Store time delta from previous packet */
-	NewPacket->Delta = Delta;
-
+	}
+	
 	/* Insert packet into the list */
-	OS_InterruptDisable();
-	NewPacket->Next = *PacketRef;
-	*PacketRef = NewPacket;
-	OS_InterruptEnable();		
+	Packet->Next = *ListPacketRef;
+	*ListPacketRef = Packet;
 }
+
+
+static bool DCC_SchedulePacket(DCC_Packet_t *Packet)
+{
+	PanicNull(Packet);
+	PanicFalse(Packet->State == DCC_Packet_t::CREATED);
 	
-static bool DCC_SchedulePacket(DCC_Packet *NewPacket)
-{	
-	PanicNull(NewPacket);	
-	PanicFalse(NewPacket->State == DCC_Packet::CREATED);
-	
-	if (NewPacket->DisableReschedule)
-		return false;
-	
-	/* Get time until packet is scheduled */
-	int32_t Delta = NewPacket->Schedule(DCC_TimerTime);
-	if (Delta != DCC_SCHEDULED_END)
+	/* Ask packet when it want to be sent */
+	Time_t Time = DCC_TimerTime;
+	if (Packet->Schedule(Time))
 	{
-		NewPacket->State = DCC_Packet::SCHEDULED;
-		DCC_InsertPacket(NewPacket, Delta);
+		/* Packet want to be sent, store time and update state */
+		Packet->Time = Time;
+		Packet->State = DCC_Packet_t::SCHEDULED;		
+		
+		/* Insert packet into queue in chronological order */
+		DCC_InsertPacket(Packet);
 		return true;
 	}
 	else
+	{
+		/* Packet no longer wants to be sent */
+		//if (Packet->Address != 0xFF)
+		//	Debug("Free %p\n", Packet);	
+		
+		/* Inform client that packet has finished */
+		if (Packet->Signal)
+			OS_SignalSend(Packet->TaskId, Packet->Signal);
+					
+		/* Free packet memory */
+		delete(Packet);
 		return false;
+	}	
 }
 
 
-
-static void DCC_GetNextByte(void)
-{	
-	PanicNull(DCC_Packet::List);
-	if (DCC_PayloadIndex < DCC_Packet::List->Size)
-	{
-		DCC_PayloadByte = DCC_Packet::List->Data[DCC_PayloadIndex];
-		DCC_PayloadIndex += 1;
-		DCC_PayloadBitCount = 8;
-		DCC_State = DCC_STATE_PAYLOAD_START_1;
-	}
-	else
-	{
-		DCC_State = DCC_STATE_PAYLOAD_END_1;	
-	}
-}
-
-static void DCC_GetNextBit(void)
+static bool DCC_ReSchedulePacket(DCC_Packet_t *Packet)
 {
-	if (DCC_PayloadBitCount)
+	PanicFalse(Packet->State == DCC_Packet_t::COMPLETE);
+	Packet->State = DCC_Packet_t::CREATED;
+	
+	DCC_AddressInfo_t *AddressInfo = Packet->AddressInfo;
+	PanicNull(AddressInfo);
+	
+	/* Find packet in the list and remove it */
+	DCC_Packet_t **ListPacketRef, *ListPacket;
+	for (ListPacketRef = &AddressInfo->List; (ListPacket = *ListPacketRef) != NULL; ListPacketRef = &ListPacket->Next)
 	{
-		DCC_PayloadBitCount -= 1;
-		if (DCC_PayloadByte & 0x80)
-			DCC_State = DCC_STATE_PAYLOAD_BIT1_1;
-		else
-			DCC_State = DCC_STATE_PAYLOAD_BIT0_1;			
-		DCC_PayloadByte = DCC_PayloadByte << 1;
-	}
-	else
-		DCC_GetNextByte();
-}
-
-
-void TCC0_Handler(void)  __attribute__((__interrupt__));
-void TCC0_Handler(void)
-{
-	uint16_t TccPattern = StatePattern[DCC_State] | TCC_PATT_PGE0 | TCC_PATT_PGE1;
-	switch (DCC_State)
-	{				
-		case DCC_STATE_IDLE_1:
+		if (ListPacket == Packet)
 		{
-			/* Check if packet at head of list is active */
-			if (DCC_Packet::List && DCC_Packet::List->State == DCC_Packet::ACTIVE)
-			{
-				DCC_PreambleCount = DCC_Packet::List->PreambleBits;
-				DCC_EndCount = 1;
-				DCC_PayloadIndex = 0;				
-				DCC_State = DCC_STATE_PREAMBLE_1;
-			}
-			else
-			{
-				/* No packet ready yet, move to other idle state */
-				DCC_State = DCC_STATE_IDLE_2;			
-			}
-		}
-		break;
-
-		case DCC_STATE_IDLE_2:
-		{
-			/* Move to other idle state */
-			DCC_State = DCC_STATE_IDLE_1;			
-		}
-		break;
-		
-		case DCC_STATE_PREAMBLE_1:
-			DCC_State = DCC_STATE_PREAMBLE_2;
+			*ListPacketRef = ListPacket->Next;
 			break;
-			
-		case DCC_STATE_PREAMBLE_2:
-			DCC_PreambleCount -= 1;
-			if (DCC_PreambleCount == 0)
-				DCC_GetNextByte();
-			else
-				DCC_State = DCC_STATE_PREAMBLE_1;
-			break;				
-	
-		case DCC_STATE_PAYLOAD_START_1:
-			DCC_State = DCC_STATE_PAYLOAD_START_2;
-			break;
-		case DCC_STATE_PAYLOAD_START_2:
-			DCC_State = DCC_STATE_PAYLOAD_START_3;
-			break;
-		case DCC_STATE_PAYLOAD_START_3:
-			DCC_State = DCC_STATE_PAYLOAD_START_4;
-			break;
-		case DCC_STATE_PAYLOAD_START_4:
-			DCC_GetNextBit();
-			break;
-							
-		case DCC_STATE_PAYLOAD_BIT0_1:
-			DCC_State = DCC_STATE_PAYLOAD_BIT0_2;
-			break;
-		case DCC_STATE_PAYLOAD_BIT0_2:
-			DCC_State = DCC_STATE_PAYLOAD_BIT0_3;
-			break;
-		case DCC_STATE_PAYLOAD_BIT0_3:
-			DCC_State = DCC_STATE_PAYLOAD_BIT0_4;			
-			break;
-		case DCC_STATE_PAYLOAD_BIT0_4:
-			DCC_GetNextBit();
-			break;
-			
-		case DCC_STATE_PAYLOAD_BIT1_1:
-			DCC_State = DCC_STATE_PAYLOAD_BIT1_2;			
-			break;
-		case DCC_STATE_PAYLOAD_BIT1_2:
-			DCC_GetNextBit();
-			break;
-
-		case DCC_STATE_PAYLOAD_END_1:
-			DCC_State = DCC_STATE_PAYLOAD_END_2;
-			break;
-					
-		case DCC_STATE_PAYLOAD_END_2:
-			DCC_EndCount -= 1;
-			if (DCC_EndCount == 0)
-			{
-				PanicNull(DCC_Packet::List);
-				PanicFalse(DCC_Packet::List->State == DCC_Packet::ACTIVE);
-				DCC_Packet::List->State = DCC_Packet::COMPLETE;				
-					
-				DCC_State = DCC_STATE_IDLE_1;
-				OS_SignalSend(DCC_TASK_ID, DCC_SIGNAL_PKT_COMPLETE);
-			}
-			else
-				DCC_State = DCC_STATE_PAYLOAD_END_1;
-			break;			
-	}
-	
-	while (TCC0->SYNCBUSY.reg  & TCC_SYNCBUSY_PATT);
-		TCC0->PATTBUF.reg = TccPattern;
-
-	/* Clear OVF interrupt */
-	TCC0->INTFLAG.reg = TCC_INTFLAG_OVF;
-
-	/* Advance clock */
-	DCC_TimerTime += 58;
-	
-	/* Walk packet list decrementing delta times, we need to account for 58uS */
-	int32_t Delta = 58;
-	DCC_Packet *Packet = DCC_Packet::List;			
-	while (Packet && Delta)
-	{
-		if (Packet->Delta <= Delta)
-		{
-			Delta -= Packet->Delta;
-			Packet->Delta = 0;	
-			Packet = Packet->Next;
-			OS_SignalSend(DCC_TASK_ID, DCC_SIGNAL_PKT_READY);
-		}
-		else
-		{
-			Packet->Delta -= Delta;
-			Delta = 0;
 		}
 	}
+	
+	/* We must have found the packet, if not something has gone seriously wrong */
+	PanicNull(ListPacket);
+	//if (ListPacket->Address != 0xFF)
+	//	Debug("Resched %p\n", ListPacket);
+	
+	/* Re-schedule the packet */
+	return DCC_SchedulePacket(ListPacket);
 }
 
 
 
-static void DCC_SendPacket(DCC_Packet *NewPacket)
-{
-	PanicNull(NewPacket);
-	PanicFalse(NewPacket->State == DCC_Packet::CREATED);
-	PanicFalse(NewPacket->Next == NULL);
-	
-	/* Destroy any 'same' packets in list */
-	DCC_Packet **PacketRef, *Packet;
-	for (PacketRef = &DCC_Packet::List; (Packet = *PacketRef) != NULL; PacketRef = &Packet->Next)
-	{
-		/* Check if packets are the same */
-		if (NewPacket->IsSame(Packet))
-		{
-			/* If packet is active (or complete) do not reschedule once it's been transmitted */
-			if (Packet->State >= DCC_Packet::ACTIVE)
-			{
-				/* Set flag to prevent this packet being rescheduled */
-				Packet->DisableReschedule = true;
-			}
-			else
-			{
-				/* Unlink packet and destroy it */
-				OS_InterruptDisable();
-				if (Packet->Next)
-					Packet->Next->Delta += Packet->Delta;
-				*PacketRef = Packet->Next;
-				delete Packet;
-				OS_InterruptEnable();
-				
-				/* Exit loop as there should only be one packet the same */
-				break;
-			}
-		}
-	}
-
-	/* Attempt to schedule new packet, destroy it if scheduling failed */
-	if (!DCC_SchedulePacket(NewPacket))
-		delete NewPacket;
-}
-
-	
-
-void DCC_SetLocomotiveSpeed(uint8_t Loco, uint8_t Speed, uint8_t Forward)
-{
-	DCC_SendPacket(new DCC_SpeedPacket(Loco, Speed, Forward));
-}
 
 
-void DCC_SetLocomotiveFunctions(uint8_t Loco, uint8_t Functions, uint8_t Group)
-{
-	DCC_SendPacket(new DCC_FunctionPacket(Loco, Functions, Group));	
-}
-
-
-void DCC_DirectWriteByte(uint16_t CvId, uint8_t Value)
-{
-	OS_SignalSet_t Signal = 1 << 15;
-
-	DCC_Mode = DCC_MODE_SERVICE;
-	
-	/* Send 3 or more reset packets */
-	DCC_SendPacket(new DCC_ServicePacket(ResetPacket, sizeof(ResetPacket), Signal));
-	OS_SignalWait(Signal);
-	
-	/* FFS - Hidden in the documentation "The Configuration variable being addressed is
-	   the provided 10 bit address plus 1.  CV #1 is defined by the address 00 00000000" */
-	uint16_t Address = CvId - 1;
-	
-	/* Instructions packets using Direct CV Addressing are 4 byte packets of the format: 
-	   Long-preamble   0  0111CCAA  0  AAAAAAAA  0  DDDDDDDD  0  EEEEEEEE  1 */
-	uint8_t CvWrite[4];
-	CvWrite[0] = 0x7C | (Address >> 8);
-	CvWrite[1] = Address & 0xFF;
-	CvWrite[2] = Value;
-	CvWrite[3] = CvWrite[0] ^ CvWrite[1] ^ CvWrite[2];	
-	DCC_SendPacket(new DCC_ServicePacket(CvWrite, sizeof(CvWrite), Signal));
-	OS_SignalWait(Signal);
-	
-	DCC_SendPacket(new DCC_ServicePacket(ResetPacket, sizeof(ResetPacket), Signal));
-	OS_SignalWait(Signal);
-	
-	DCC_Mode = DCC_MODE_NORMAL;
-}
-
-
-void DCC_DirectVerifyByte(uint16_t CvId, uint8_t Value)
-{
-	OS_SignalSet_t Signal = (1 << 15);	
-
-	DCC_Mode = DCC_MODE_SERVICE;
-
-	/* Send 3 or more reset packets */
-	DCC_SendPacket(new DCC_ServicePacket(ResetPacket, sizeof(ResetPacket), Signal));
-	OS_SignalWait(Signal);
-
-	/* TODO: Clear current sense trigger */
-		
-	/* FFS - Hidden in the documentation "The Configuration variable being addressed is
-	   the provided 10 bit address plus 1.  CV #1 is defined by the address 00 00000000" */
-	uint16_t Address = CvId - 1;
-
-	/* Instructions packets using Direct CV Addressing are 4 byte packets of the format: 
-	   Long-preamble   0  0111CCAA  0  AAAAAAAA  0  DDDDDDDD  0  EEEEEEEE  1 */
-	uint8_t CvWrite[4];
-	CvWrite[0] = 0x74 | (Address >> 8);
-	CvWrite[1] = Address & 0xFF;
-	CvWrite[2] = Value;
-	CvWrite[3] = CvWrite[0] ^ CvWrite[1] ^ CvWrite[2];	
-	DCC_SendPacket(new DCC_ServicePacket(CvWrite, sizeof(CvWrite), Signal));
-	OS_SignalWait(Signal);
-	
-	/* TODO: Check if current sense triggered */
-	
-	DCC_SendPacket(new DCC_ServicePacket(ResetPacket, sizeof(ResetPacket), Signal));
-	OS_SignalWait(Signal);
-
-	DCC_Mode = DCC_MODE_NORMAL;
-}
 
 
 
 
 void DCC_Task(void *Instance)
 {	
-	DCC_SendPacket(new DCC_IdlePacket());
-	
 	for (;;)
 	{
-		 OS_SignalWait(DCC_SIGNAL_PKT_COMPLETE | DCC_SIGNAL_PKT_READY);
-		
-		DCC_Packet *Packet = DCC_Packet::List;
-		if (Packet && Packet->State == DCC_Packet::COMPLETE)
+		/* Check if active packet is now complete */
+		if (DCC_TxIsComplete())
 		{
-			/* Record current packet end time and address if it's not an idle packet */				
-			if (Packet->Data[0] != 0xFF)
-			{
-				DCC_Packet::PreviousAddress = Packet->Data[0];
-				DCC_Packet::PreviousEndTime = DCC_TimerTime;
-			}
-				
-			/* Unlink packet from list */
-			OS_InterruptDisable();
-			DCC_Packet::List = Packet->Next;
+			/* Attempt to schedule the packet again */
+			DCC_ReSchedulePacket(DCC_TxPacket);
+			
+			/* Clear scheduled packet to prevent DCC Tx state machine from re-starting immediately */
+			DCC_ScheduledPacket = NULL;
+			
+			/* Move DCC Tx state machine back to idle */
+			DCC_TxIdle();
+		}
+		
+		/* If no packet active, get next packet to be scheduled */
+		OS_InterruptDisable();
+		if (DCC_TxIsIdle())
+		{
+			DCC_ScheduledPacket = NULL;
 			OS_InterruptEnable();
 			
-			/* Attempt to schedule package again, destroy it if it can't be re-scheduled */
-			Packet->State = DCC_Packet::CREATED;
-			if (!DCC_SchedulePacket(Packet))
+			/* Move packets from send list to scheduled list */
+			while (DCC_PacketSendList)
 			{
-				if (Packet->Signal)
-					OS_SignalSend(Packet->TaskId, Packet->Signal);		
-				delete(Packet);
+				/* Remove from send list */
+				DCC_Packet_t *Packet = DCC_PacketSendList;
+				DCC_PacketSendList = Packet->Next;
+			
+				/* Schedule packet */
+				DCC_SchedulePacket(Packet);			
 			}
-		}
-		
-		Packet = DCC_Packet::List;
-		if (Packet && Packet->State == DCC_Packet::SCHEDULED)
-		{
-			if (Packet->Delta <= 0)
-			{
-				/* Check if address same as previous packet */
-				int32_t Delta = Time_Sub(DCC_TimerTime, DCC_Packet::PreviousEndTime);
-				if (Packet->Data[0] == DCC_Packet::PreviousAddress && (Delta < 5000))
-				{
-					/* Remove from list and re-insert 5ms later */	
-					OS_InterruptDisable();	
-					DCC_Packet::List = Packet->Next;
-					OS_InterruptEnable();
-					DCC_InsertPacket(Packet, 5000 - Delta);							
-				}
-				else
-				{
-					/* Packet is now active */
-					Packet->State = DCC_Packet::ACTIVE;
-				}					
-			}
-		}
 
-		if (DCC_Mode == DCC_MODE_NORMAL)
-		{
-			if ((DCC_Packet::List == NULL) ||
-			    (DCC_Packet::List->Delta > DCC_MS(10)))
+			/* Update schedule packet */
+			DCC_ScheduledPacket = DCC_NextPacket(DCC_ScheduledPacketTime);
+
+			/* In Normal mode send idle packets */
+			if (DCC_Mode == DCC_MODE_NORMAL)
 			{
-				DCC_SendPacket(new DCC_IdlePacket());
+				/* If no packet scheduled or packet is more than 20ms away, send an idle packet */
+				if ((DCC_ScheduledPacket == NULL) ||
+				    (Time_Gt(DCC_ScheduledPacketTime, Time_Add(DCC_TimerTime, 20000))))
+				{	
+					DCC_Packet_t *Packet = new DCC_IdlePacket_t();
+					DCC_SchedulePacket(Packet);
+					
+					/* Update scheduled packet */
+					DCC_ScheduledPacket = DCC_NextPacket(DCC_ScheduledPacketTime);
+				}
 			}
-		}
+		}			
+		else
+			OS_InterruptEnable();
+			
+		OS_SignalWait(OS_SIGNAL_USER);		
 	}
 }
 
@@ -758,10 +280,9 @@ void DCC_Enable(void)
 
 void DCC_Init(DCC_Mode_t Mode)
 {
-	static uint32_t DCC_TaskStack[256];
+	static uint32_t DCC_TaskStack[512];
 	
 	DCC_Mode = Mode;
-	DCC_Packet::List = 0;
 		
 	/* Initialize GPIO (PORT) */
 	PIO_EnableOutput(PIN_PA08);
@@ -784,7 +305,7 @@ void DCC_Init(DCC_Mode_t Mode)
 
 	/* Enable update interrupt */
 	TCC0->INTENSET.reg |= TCC_INTENSET_OVF;
-	NVIC_SetPriority(TCC0_IRQn, 1);
+	NVIC_SetPriority(TCC0_IRQn, 0);
 	NVIC_EnableIRQ(TCC0_IRQn);
 
 	/* Set TCC0 timer interrupt for every 58uS */
@@ -795,3 +316,84 @@ void DCC_Init(DCC_Mode_t Mode)
 	
 	OS_TaskInit(DCC_TASK_ID, DCC_Task, NULL, DCC_TaskStack, sizeof(DCC_TaskStack));
 }
+
+
+void DCC_SendPacket(DCC_Packet_t *Packet)
+{
+	PanicNull(Packet);
+	PanicFalse(Packet->State == DCC_Packet_t::CREATED);
+
+	/* Add to send list */
+	Packet->Next = DCC_PacketSendList;
+	DCC_PacketSendList = Packet;
+	OS_SignalSend(DCC_TASK_ID, OS_SIGNAL_USER);
+}
+
+
+void DCC_SetLocomotiveSpeed(uint8_t Loco, uint8_t Speed, uint8_t Forward)
+{
+	/* Skip E-Stop value of 0x01 */
+	if (Speed > 0)
+	Speed += 1;
+
+	DCC_SendPacket(new DCC_SpeedPacket_t(Loco, Speed, Forward));
+}
+
+
+void DCC_StopLocomotive(uint8_t Loco, uint8_t Forward)
+{
+	DCC_SendPacket(new DCC_SpeedPacket_t(Loco, 0x01, Forward));
+}
+
+
+void DCC_SetLocomotiveFunctions(uint8_t Loco, uint8_t Functions, uint8_t Group)
+{
+	if (Group < 13)
+	DCC_SendPacket(new DCC_FunctionPacket_t(Loco, Functions, Group));
+	else
+	DCC_SendPacket(new DCC_FunctionExpansionPacket_t(Loco, Functions, Group));
+}
+
+
+bool DCC_CvWrite(uint16_t CvId, uint8_t Value)
+{
+	OS_SignalSet_t Signal = 1 << 15;
+	bool Acked;
+	
+	DCC_Mode = DCC_MODE_SERVICE;
+	
+	/* Send 3 or more reset packets */
+	DCC_SendPacket(new DCC_ServicePacket_t(ResetPacket, sizeof(ResetPacket), Signal));
+	OS_SignalWait(Signal);
+	
+	DCC_SendPacket(new DCC_CvWritePacket_t(CvId, Value, &Acked, Signal));
+	OS_SignalWait(Signal);
+	
+	//DCC_SendPacket(new DCC_ServicePacket_t(ResetPacket, sizeof(ResetPacket), Signal));
+	//OS_SignalWait(Signal);
+	
+	DCC_Mode = DCC_MODE_NORMAL;
+	return Acked;
+}
+
+
+uint8_t DCC_CvRead(uint16_t CvId)
+{
+	OS_SignalSet_t Signal = (1 << 15);
+	uint8_t CvValue;
+	DCC_Mode = DCC_MODE_SERVICE;
+
+	/* Send 3 or more reset packets */
+	DCC_SendPacket(new DCC_ServicePacket_t(ResetPacket, sizeof(ResetPacket), Signal));
+	OS_SignalWait(Signal);
+
+	DCC_SendPacket(new DCC_CvReadPacket_t(CvId, &CvValue, Signal));
+	OS_SignalWait(Signal);
+	
+	//DCC_SendPacket(new DCC_ServicePacket_t(ResetPacket, sizeof(ResetPacket), Signal));
+	//OS_SignalWait(Signal);
+
+	DCC_Mode = DCC_MODE_NORMAL;
+	return CvValue;
+}
+

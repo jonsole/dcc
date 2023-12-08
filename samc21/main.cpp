@@ -20,6 +20,8 @@
 #include "eic.h"
 #include "esp.h"
 #include "sercom.h"
+#include "ac.h"
+#include "dcc_msg.h"
 
 #define ENABLE_ESP
 /*
@@ -44,7 +46,7 @@ PA16 -
 PA17 - 
 PA18
 PA19 
-PA20  
+PA20 - Debug
 PA21
 PA22 - PCA9685 SERCOM3 I2C
 PA23 - PCA9685 SERCOM3 I2C
@@ -54,9 +56,11 @@ PB01 -
 PB02 - 
 PB03
 PB04 - 
-PB05 - 
+PB05 - Current Sensor AC/AIN6
 PB06 - 
 PB07 - 
+PB08 - 
+PB09 - Debug
 
 PB30 - ESP2 SERCOM5
 PB31 - ESP2 SERCOM5
@@ -67,10 +71,13 @@ PB31 - ESP2 SERCOM5
 
 extern void CLI_Init(void);
 extern void CLI_InputChar(uint8_t Char);
+extern uint32_t CLI_GetLocoFunctions(uint8_t Loco);
+extern void CLI_SetLocoFunctions(uint8_t Loco, uint32_t Functions);
 
 
 #define MAIN_SIGNAL_TIMER		(1 << (OS_SIGNAL_USER + 0))
-#define MAIN_SIGNAL_DEBUG_INPUT (1 << (OS_SIGNAL_USER + 1))
+#define CLI_SIGNAL_DEBUG_INPUT  (1 << (OS_SIGNAL_USER + 0))
+
 
 ESP_t ESP[2];
 
@@ -81,17 +88,7 @@ void MAIN_Task(void *Instance)
 	for (;;)
 	{
 		OS_SignalSet_t Sig = OS_SignalWait(0xFFFFUL);
-		
-		if (Sig & MAIN_SIGNAL_DEBUG_INPUT)
-		{
-			uint8_t Char = Debug_GetChar();
-			while (Char)
-			{
-				CLI_InputChar(Char);		
-				Char = Debug_GetChar();
-			}
-		}
-		
+			
 		if (Sig & MAIN_SIGNAL_TIMER)
 		{
 #ifdef ENABLE_ESP
@@ -116,24 +113,6 @@ void CALLBACK_ESP_LinkReset(ESP_t *Esp)
 }
 
 
-#define DCC_SET_LOCO_SPEED	(0x10)
-typedef struct  
-{
-	uint8_t Id;
-	uint8_t Address;
-	uint8_t Speed;
-	uint8_t Forward;
-} DCC_SetLocoSpeed_t;
-
-#define DCC_SET_LOCO_FUNCTIONS (0x11)
-typedef struct  
-{
-	uint8_t Id;
-	uint8_t Address;
-	uint8_t Functions;
-} DCC_SetLocoFunctions_t;
-
-
 void CALLBACK_ESP_PacketReceived(ESP_t *Esp, uint8_t *Msg, uint8_t MsgSize)
 {
 	const uint8_t Id = Msg[0];
@@ -154,14 +133,50 @@ void CALLBACK_ESP_PacketReceived(ESP_t *Esp, uint8_t *Msg, uint8_t MsgSize)
 				MEM_Free(Msg);
 		}
 		break;
+
+		case DCC_STOP_LOCO:
+		{
+			DCC_StopLoco_t *Stop = (DCC_StopLoco_t *)Msg;
+			DCC_StopLocomotive(Stop->Address, Stop->Forward);
+			if (ESP_IsSynced(Esp))
+			{
+				ESP_Packet_t *Packet = ESP_CreatePacket(1, Msg, sizeof(DCC_StopLoco_t), false);
+				if (Packet)
+					ESP_TxPacket(Esp, Packet);
+			}
+			else
+				MEM_Free(Msg);
+			
+		}
+		break;
 		
 		case DCC_SET_LOCO_FUNCTIONS:
 		{
-			DCC_SetLocoFunctions_t *Func = (DCC_SetLocoFunctions_t *)Msg;
-			DCC_SetLocomotiveFunctions(Func->Address, Func->Functions, 0);
+			DCC_SetLocoFunction_t *Func = (DCC_SetLocoFunction_t *)Msg;
+
+			uint32_t Functions = CLI_GetLocoFunctions(Func->Address);
+			if (Func->Set)
+				Functions |= 1UL << Func->Function;
+			else
+				Functions &= ~(1UL << Func->Function);				
+			CLI_SetLocoFunctions(Func->Address, Functions);
+			
+			if (Func->Function <= 4)
+				DCC_SetLocomotiveFunctions(Func->Address, ((Functions >> 1) & 0b01111) | ((Functions & 0b00001) << 4), 0); /* F1 - F4 */
+			else if (Func->Function <= 8)
+				DCC_SetLocomotiveFunctions(Func->Address, ((Functions >> 5) & 0b01111), 5); /* F5 - F8 */
+			else if (Func->Function <= 12)
+				DCC_SetLocomotiveFunctions(Func->Address, ((Functions >> 9) & 0b01111), 9); /* F9 - F12 */
+			else if (Func->Function <= 20)
+				DCC_SetLocomotiveFunctions(Func->Address, ((Functions >> 13) & 0b1111111), 13); /* F13 - F20 */
+			else if (Func->Function <= 28)
+				DCC_SetLocomotiveFunctions(Func->Address, ((Functions >> 21) & 0b1111111), 21); /* F21 - F28 */
+			else if (Func->Function <= 36)
+				DCC_SetLocomotiveFunctions(Func->Address, ((Functions >> 29) & 0b1111111), 29); /* F29 - F36 */
+
 			if (ESP_IsSynced(Esp))
 			{
-				ESP_Packet_t *Packet = ESP_CreatePacket(1, Msg, sizeof(DCC_SetLocoFunctions_t), false);
+				ESP_Packet_t *Packet = ESP_CreatePacket(1, Msg, sizeof(DCC_SetLocoFunction_t), false);
 				if (Packet)
 					ESP_TxPacket(Esp, Packet);
 			}
@@ -199,7 +214,7 @@ int main(void)
 	OS_Init();
 			
 	/* Initialise debug output */
-	Debug_Init(MAIN_TASK_ID, MAIN_SIGNAL_DEBUG_INPUT);
+	Debug_Init(CLI_TASK_ID, CLI_SIGNAL_DEBUG_INPUT);
 
 #ifdef ENABLE_ESP
 	PIO_EnablePullUp(PIN_PA10D_SERCOM2_PAD2);
@@ -220,17 +235,27 @@ int main(void)
 	ESP_Init(&ESP[1], 5/* SERCOM5 */, 3/* DMAC3 */, 3/* TC3 */);
 #endif
 	
+	/* Debug PIOs */
+	PIO_EnableOutput(PIN_PB09);
+	PIO_Clear(PIN_PB09);
+	PIO_EnableOutput(PIN_PA20);
+	PIO_Clear(PIN_PA20);
+
 	DCC_Init(DCC_MODE_NORMAL);
-	
+
+	AC_Init();
+
+			
 	CLI_Init();
 
 	Debug("DCC Encoder v0.1\n");
 
 	/* Enable 1ms tick */
 	SysTick_Config(48000000 / 1000);
+	NVIC_SetPriority(SysTick_IRQn, 2);
 	NVIC_EnableIRQ(SysTick_IRQn);
 		
-	static uint32_t MAIN_TaskStack[256];
+	static uint32_t MAIN_TaskStack[512];
 	OS_TaskInit(MAIN_TASK_ID, MAIN_Task, NULL, MAIN_TaskStack, sizeof(MAIN_TaskStack));
 	
 	OS_Start();	

@@ -109,6 +109,8 @@ void OS_Start(void)
 
 void OS_Switch(void)
 {
+	OS_InterruptDisable();
+
 	/* Update task status */
 	OS_TaskCurrent->Status = OS_TASK_STATUS_READY;
 
@@ -122,6 +124,8 @@ void OS_Switch(void)
 
 void OS_Wait(void)
 {
+	OS_InterruptDisable();
+	
 	/* Update task status */
 	OS_TaskCurrent->Status = OS_TASK_STATUS_WAIT;
 
@@ -136,8 +140,8 @@ void OS_Wait(void)
 /* Dispatch next task */
 void OS_Dispatch(void)
 {
-	/* Disable interrupts before checking ready list */
-	OS_InterruptDisable();
+	/* Interrupts must be disabled when dispatching tasks */
+	PanicFalse(OS_IsInterruptsDisabled());
 
 	/* Wait if ready list is empty */
 	while (OS_ListIsEmpty(&OS_TaskReadyList))
@@ -153,14 +157,14 @@ void OS_Dispatch(void)
 	/* Remove task at head of ready list */
 	OS_TaskDispatch = (OS_Task_t *)OS_ListRemoveHead(&OS_TaskReadyList);
 
-	/* Re-enable interrupts now that we're done with manipulating task lists */
-	OS_InterruptEnable();
-
 	/* Mark task as active */
 	OS_TaskDispatch->Status = OS_TASK_STATUS_ACTIVE;
 
 	/* Trigger PendSV which performs the actual context switch: */
 	SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+
+	/* Re-enable interrupts now that we're done with manipulating task lists */
+	OS_InterruptEnable();
 }
 
 

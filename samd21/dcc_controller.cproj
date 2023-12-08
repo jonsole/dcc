@@ -137,8 +137,11 @@
       <Value>%24(PackRepoDir)\atmel\SAMD21_DFP\1.3.395\samd21a\include</Value>
       <Value>..</Value>
       <Value>../../common</Value>
+      <Value>../../common/kved</Value>
+      <Value>../kved</Value>
     </ListValues>
   </armgcc.compiler.directories.IncludePaths>
+  <armgcc.compiler.optimization.level>Optimize (-O1)</armgcc.compiler.optimization.level>
   <armgcc.compiler.optimization.PrepareFunctionsForGarbageCollection>True</armgcc.compiler.optimization.PrepareFunctionsForGarbageCollection>
   <armgcc.compiler.optimization.DebugLevel>Maximum (-g3)</armgcc.compiler.optimization.DebugLevel>
   <armgcc.compiler.warnings.AllWarnings>True</armgcc.compiler.warnings.AllWarnings>
@@ -201,6 +204,30 @@
       <SubType>compile</SubType>
       <Link>esp_tx.c</Link>
     </Compile>
+    <Compile Include="..\common\kved\kved.c">
+      <SubType>compile</SubType>
+      <Link>kved.c</Link>
+    </Compile>
+    <Compile Include="..\common\kved\kved.h">
+      <SubType>compile</SubType>
+      <Link>kved.h</Link>
+    </Compile>
+    <Compile Include="..\common\kved\kved_config.h">
+      <SubType>compile</SubType>
+      <Link>kved_config.h</Link>
+    </Compile>
+    <Compile Include="..\common\kved\kved_cpu.c">
+      <SubType>compile</SubType>
+      <Link>kved_cpu.c</Link>
+    </Compile>
+    <Compile Include="..\common\kved\kved_cpu.h">
+      <SubType>compile</SubType>
+      <Link>kved_cpu.h</Link>
+    </Compile>
+    <Compile Include="..\common\kved\kved_flash.h">
+      <SubType>compile</SubType>
+      <Link>kved_flash.h</Link>
+    </Compile>
     <Compile Include="..\common\mem.c">
       <SubType>compile</SubType>
       <Link>mem.c</Link>
@@ -222,6 +249,9 @@
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="dcc_proxy.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="dcc_proxy.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="debug.c">
@@ -268,6 +298,18 @@
     </Compile>
     <Compile Include="evsys.h">
       <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="kved\port_cpu.c">
+      <SubType>compile</SubType>
+      <Link>port_cpu.c</Link>
+    </Compile>
+    <Compile Include="kved\port_flash.c">
+      <SubType>compile</SubType>
+      <Link>port_flash.c</Link>
+    </Compile>
+    <Compile Include="kved\port_flash.h">
+      <SubType>compile</SubType>
+      <Link>port_flash.h</Link>
     </Compile>
     <Compile Include="ltp305.c">
       <SubType>compile</SubType>

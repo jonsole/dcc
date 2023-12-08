@@ -53,27 +53,27 @@ extern void ESP_HwInit(struct ESP *Esp, uint8_t DmaChannel, uint8_t Timer);
 extern void ESP_HwTask(struct ESP *Esp);
 extern void ESP_HwTxKick(struct ESP *Esp);
 
-static uint16_t __inline ESP_HwTxBufferIndex(ESP_Hardware_t *Hw)
+static uint16_t ESP_HwTxBufferIndex(ESP_Hardware_t *Hw)
 {
 	return BufferIndex(Hw->TxUsartBuffer);
 }
 
-static uint16_t __inline ESP_HwTxBufferSpace(ESP_Hardware_t *Hw)
+static uint16_t ESP_HwTxBufferSpace(ESP_Hardware_t *Hw)
 {
 	return BufferSpace(Hw->TxUsartBuffer);
 }
 
-static void __inline ESP_HwTxBufferWrite(ESP_Hardware_t *Hw, uint8_t Data)
+static void ESP_HwTxBufferWrite(ESP_Hardware_t *Hw, uint8_t Data)
 {
 	BufferWrite(Hw->TxUsartBuffer, Data);
 }
 
-static bool __inline ESP_HwRxBufferIsEmpty(ESP_Hardware_t *Hw)
+static bool ESP_HwRxBufferIsEmpty(ESP_Hardware_t *Hw)
 {
 	return BufferIsEmpty(Hw->RxUsartBuffer);
 }
 
-static uint8_t __inline ESP_HwRxBufferRead(ESP_Hardware_t *Hw)
+static uint8_t ESP_HwRxBufferRead(ESP_Hardware_t *Hw)
 {
 	return BufferRead(Hw->RxUsartBuffer);
 }

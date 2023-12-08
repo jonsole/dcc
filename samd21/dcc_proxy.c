@@ -31,15 +31,32 @@ void DCC_SetLocomotiveSpeed(uint8_t Address, uint8_t Speed, uint8_t Forward)
 	}
 }
 
-void DCC_SetLocomotiveFunctions(uint8_t Address, uint8_t Functions)
+void DCC_SetLocomotiveFunction(uint8_t Address, uint8_t Function, uint8_t Set)
 {
-	DCC_SetLocoFunctions_t *Msg = MEM_Create(DCC_SetLocoFunctions_t);
+	DCC_SetLocoFunction_t *Msg = MEM_Create(DCC_SetLocoFunction_t);
 	if (Msg)
 	{
 		Msg->Id = DCC_SET_LOCO_FUNCTIONS;
 		Msg->Address = Address;
-		Msg->Functions = Functions;
-		ESP_Packet_t *Packet = ESP_CreatePacket(1, Msg, sizeof(DCC_SetLocoFunctions_t), false);
+		Msg->Function = Function;
+		Msg->Set = Set;
+		ESP_Packet_t *Packet = ESP_CreatePacket(1, Msg, sizeof(DCC_SetLocoFunction_t), false);
+		if (Packet)
+			ESP_TxPacket(&Esp, Packet);
+		else
+			MEM_Free(Msg);
+	}	
+}
+
+void DCC_StopLocomotive(uint8_t Address,  uint8_t Forward)
+{
+	DCC_StopLoco_t *Msg = MEM_Create(DCC_StopLoco_t);
+	if (Msg)
+	{
+		Msg->Id = DCC_STOP_LOCO;
+		Msg->Address = Address;
+		Msg->Forward = Forward;
+		ESP_Packet_t *Packet = ESP_CreatePacket(1, Msg, sizeof(DCC_StopLoco_t), false);
 		if (Packet)
 			ESP_TxPacket(&Esp, Packet);
 		else
@@ -49,17 +66,6 @@ void DCC_SetLocomotiveFunctions(uint8_t Address, uint8_t Functions)
 
 void DCC_PowerOff(void)
 {
-	DCC_SetLocoFunctions_t *Msg = MEM_Create(DCC_SetLocoFunctions_t);
-	if (Msg)
-	{
-		Msg->Address = 0;
-		Msg->Functions = 0;
-		ESP_Packet_t *Packet = ESP_CreatePacket(1, Msg, sizeof(DCC_SetLocoFunctions_t), false);
-		if (Packet)
-			ESP_TxPacket(&Esp, Packet);
-		else
-			MEM_Free(Msg);
-	}	
 }
 
 void DCC_PowerOn(void)

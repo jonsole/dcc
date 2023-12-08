@@ -12,6 +12,7 @@
 #define MAIN_TASK_ID	(1)
 #define DCC_TASK_ID		(2)
 #define ESP_TASK_ID		(3)
+#define CLI_TASK_ID		(4)
 
 
 #endif /* OS_TASK_ID_H_ */

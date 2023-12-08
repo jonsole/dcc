@@ -1,6 +1,8 @@
 #ifndef __RTIME_H__
 #define __RTIME_H__
 
+typedef uint32_t Time_t;
+
 #define	Time_Add(t1, t2)	((t1) + (t2))
 #define	Time_Sub(t1, t2)	((int32_t) (t1) - (int32_t) (t2))
 #define	Time_Eq(t1, t2)		((t1) == (t2))

@@ -79,6 +79,7 @@ void SERCOM_UsartInit(uint8_t Instance, uint32_t BaudHz, uint8_t RxPad, uint8_t 
 	uint64_t BaudRate = (uint64_t)65536 * (SERCOM_REF_CLK_HZ - 16 * BaudHz) / SERCOM_REF_CLK_HZ;
 	Usart->BAUD.reg = (uint16_t)BaudRate;
 	Usart->CTRLA.bit.ENABLE = 1;
+	SERCOM_UsartSyncWait(Usart);
 }
 
 void SERCOM_UsartEnableInterrupt(uint8_t Instance, uint8_t InterruptMask, void (*IntHandler)(uint8_t, void *), void *IntData)
@@ -92,8 +93,8 @@ void SERCOM_UsartEnableInterrupt(uint8_t Instance, uint8_t InterruptMask, void (
 	/* Enable interrupt(s) */
 	Usart->INTENSET.reg = InterruptMask;	
 	
-	/* Enable SERCOM interrupts, priority 0 */
-	NVIC_SetPriority(SERCOM_GetIrqNumber(Instance), 0);
+	/* Enable SERCOM interrupts, priority 1 */
+	NVIC_SetPriority(SERCOM_GetIrqNumber(Instance), 1);
 	NVIC_EnableIRQ(SERCOM_GetIrqNumber(Instance));
 }
 
